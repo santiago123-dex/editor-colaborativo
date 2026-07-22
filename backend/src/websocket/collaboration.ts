@@ -5,7 +5,7 @@ import * as encoding from 'lib0/encoding'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import * as syncProtocol from 'y-protocols/sync'
 import * as Y from 'yjs'
-import { UUID_PATTERN } from '../constants.js'
+import { DOCUMENT_TEXT, TIPTAP_FRAGMENT, UUID_PATTERN } from '../constants.js'
 import type { DocumentRepository } from '../db/document-repository.js'
 
 // The standard Yjs WebSocket envelope uses prefix 0 to route frames to y-protocols/sync.
@@ -14,11 +14,13 @@ const MESSAGE_SYNC = 0
 interface Room {
   doc: Y.Doc
   clients: Set<WebSocket>
+  dirty: boolean
 }
 
 export interface CollaborationWebSocket {
   activeRoomCount: () => number
   getActiveDocument: (documentId: string) => Y.Doc | undefined
+  isDocumentActive: (documentId: string) => boolean
   close: () => Promise<void>
 }
 
@@ -40,16 +42,37 @@ const toUint8Array = (data: RawData): Uint8Array => {
 export const createCollaborationWebSocket = (
   httpServer: HttpServer,
   repository: DocumentRepository,
+  options: { now: () => Date; heartbeatIntervalMs: number },
 ): CollaborationWebSocket => {
   const rooms = new Map<string, Room>()
   const webSocketServer = new WebSocketServer({ noServer: true })
+  const aliveClients = new WeakSet<WebSocket>()
   let closePromise: Promise<void> | undefined
+
+  const heartbeatInterval = setInterval(() => {
+    for (const client of webSocketServer.clients) {
+      if (!aliveClients.has(client)) {
+        client.terminate()
+        continue
+      }
+
+      aliveClients.delete(client)
+      if (client.readyState === WebSocket.OPEN) client.ping()
+    }
+  }, options.heartbeatIntervalMs)
+  heartbeatInterval.unref()
 
   const persistAndDestroyRoom = (documentId: string, room: Room) => {
     if (rooms.get(documentId) !== room) return
 
-    // Once a room is empty, a full update is the durable snapshot needed to recreate its Y.Doc.
-    repository.saveState(documentId, Y.encodeStateAsUpdate(room.doc))
+    // Once a dirty room is empty, a full update is the durable snapshot needed to recreate its Y.Doc.
+    if (room.dirty) {
+      repository.saveState(
+        documentId,
+        Y.encodeStateAsUpdate(room.doc),
+        options.now().toISOString(),
+      )
+    }
     rooms.delete(documentId)
     room.doc.destroy()
   }
@@ -63,10 +86,13 @@ export const createCollaborationWebSocket = (
 
     // A single Y.Doc per active room is the in-memory source of truth shared by all its clients.
     const doc = new Y.Doc()
+    doc.getXmlFragment(TIPTAP_FRAGMENT)
+    doc.getText(DOCUMENT_TEXT)
     Y.applyUpdate(doc, stored.state)
-    const room: Room = { doc, clients: new Set() }
+    const room: Room = { doc, clients: new Set(), dirty: false }
 
     doc.on('update', (update: Uint8Array, origin: unknown) => {
+      room.dirty = true
       const encoder = encoding.createEncoder()
       encoding.writeVarUint(encoder, MESSAGE_SYNC)
       syncProtocol.writeUpdate(encoder, update)
@@ -84,6 +110,8 @@ export const createCollaborationWebSocket = (
   const connectToRoom = (socket: WebSocket, documentId: string) => {
     const room = getOrCreateRoom(documentId)
     room.clients.add(socket)
+    aliveClients.add(socket)
+    socket.on('pong', () => aliveClients.add(socket))
 
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_SYNC)
@@ -141,8 +169,10 @@ export const createCollaborationWebSocket = (
   return {
     activeRoomCount: () => rooms.size,
     getActiveDocument: (documentId) => rooms.get(documentId)?.doc,
+    isDocumentActive: (documentId) => rooms.has(documentId),
     close: () => {
       closePromise ??= (async () => {
+        clearInterval(heartbeatInterval)
         for (const client of webSocketServer.clients) client.terminate()
         await new Promise<void>((resolve, reject) => {
           webSocketServer.close((error) => (error ? reject(error) : resolve()))

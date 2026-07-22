@@ -16,22 +16,36 @@ export interface CollaborationServer {
 
 export interface CollaborationServerOptions {
   databasePath: string
+  now?: () => Date
+  heartbeatIntervalMs?: number
 }
 
 export const createCollaborationServer = ({
   databasePath,
+  now = () => new Date(),
+  heartbeatIntervalMs = 30_000,
 }: CollaborationServerOptions): CollaborationServer => {
   const database = createDatabase(databasePath)
   initializeSchema(database)
   const repository = new SqliteDocumentRepository(database)
   const app = express()
   const httpServer = createServer(app)
-  const collaboration = createCollaborationWebSocket(httpServer, repository)
+  const collaboration = createCollaborationWebSocket(httpServer, repository, {
+    now,
+    heartbeatIntervalMs,
+  })
   let closePromise: Promise<void> | undefined
 
   app.use(cors())
   app.use(express.json({ limit: '1mb' }))
-  app.use('/documents', createDocumentsRouter(repository, collaboration.getActiveDocument))
+  app.use(
+    '/documents',
+    createDocumentsRouter(
+      repository,
+      collaboration.getActiveDocument,
+      collaboration.isDocumentActive,
+    ),
+  )
 
   app.use((_request, response) => {
     response.status(404).json({ error: 'Not found' })
