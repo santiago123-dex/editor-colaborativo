@@ -3,14 +3,18 @@ import cors from 'cors'
 import express, { type Express } from 'express'
 import { createDatabase } from './db/connection.js'
 import { SqliteDocumentRepository } from './db/document-repository.js'
+import { SqliteMessageRepository } from './db/message-repository.js'
 import { initializeSchema } from './db/schema.js'
 import { createDocumentsRouter } from './routes/documents.js'
 import { createCollaborationWebSocket } from './websocket/collaboration.js'
+import { createChatWebSocket } from './websocket/chat.js'
+import { attachUpgradeRouter } from './websocket/upgrade-router.js'
 
 export interface CollaborationServer {
   app: Express
   httpServer: HttpServer
   activeRoomCount: () => number
+  activeChatRoomCount: () => number
   close: () => Promise<void>
 }
 
@@ -28,12 +32,15 @@ export const createCollaborationServer = ({
   const database = createDatabase(databasePath)
   initializeSchema(database)
   const repository = new SqliteDocumentRepository(database)
+  const messageRepository = new SqliteMessageRepository(database)
   const app = express()
   const httpServer = createServer(app)
-  const collaboration = createCollaborationWebSocket(httpServer, repository, {
+  const collaboration = createCollaborationWebSocket(repository, {
     now,
     heartbeatIntervalMs,
   })
+  const chat = createChatWebSocket(messageRepository, { now, heartbeatIntervalMs })
+  attachUpgradeRouter(httpServer, repository, collaboration, chat)
   let closePromise: Promise<void> | undefined
 
   app.use(cors())
@@ -42,8 +49,10 @@ export const createCollaborationServer = ({
     '/documents',
     createDocumentsRouter(
       repository,
+      messageRepository,
       collaboration.getActiveDocument,
-      collaboration.isDocumentActive,
+      (documentId) =>
+        collaboration.isDocumentActive(documentId) || chat.isDocumentActive(documentId),
     ),
   )
 
@@ -71,9 +80,11 @@ export const createCollaborationServer = ({
     app,
     httpServer,
     activeRoomCount: collaboration.activeRoomCount,
+    activeChatRoomCount: chat.activeRoomCount,
     close: () => {
       closePromise ??= (async () => {
         await collaboration.close()
+        await chat.close()
         if (httpServer.listening) {
           await new Promise<void>((resolve, reject) => {
             httpServer.close((error) => (error ? reject(error) : resolve()))

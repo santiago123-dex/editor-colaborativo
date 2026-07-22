@@ -1,11 +1,11 @@
-import type { Server as HttpServer } from 'node:http'
+import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import * as syncProtocol from 'y-protocols/sync'
 import * as Y from 'yjs'
-import { DOCUMENT_TEXT, TIPTAP_FRAGMENT, UUID_PATTERN } from '../constants.js'
+import { DOCUMENT_TEXT, TIPTAP_FRAGMENT } from '../constants.js'
 import type { DocumentRepository } from '../db/document-repository.js'
 
 // The standard Yjs WebSocket envelope uses prefix 0 to route frames to y-protocols/sync.
@@ -21,17 +21,13 @@ export interface CollaborationWebSocket {
   activeRoomCount: () => number
   getActiveDocument: (documentId: string) => Y.Doc | undefined
   isDocumentActive: (documentId: string) => boolean
+  handleUpgrade: (
+    request: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    documentId: string,
+  ) => void
   close: () => Promise<void>
-}
-
-const sendHttpError = (socket: Duplex, status: number, message: string) => {
-  const body = JSON.stringify({ error: message })
-  socket.end(
-    `HTTP/1.1 ${status} ${status === 404 ? 'Not Found' : 'Bad Request'}\r\n` +
-      'Connection: close\r\n' +
-      'Content-Type: application/json\r\n' +
-      `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
-  )
 }
 
 const toUint8Array = (data: RawData): Uint8Array => {
@@ -40,7 +36,6 @@ const toUint8Array = (data: RawData): Uint8Array => {
 }
 
 export const createCollaborationWebSocket = (
-  httpServer: HttpServer,
   repository: DocumentRepository,
   options: { now: () => Date; heartbeatIntervalMs: number },
 ): CollaborationWebSocket => {
@@ -145,31 +140,15 @@ export const createCollaborationWebSocket = (
     })
   }
 
-  httpServer.on('upgrade', (request, socket, head) => {
-    let documentId: string | undefined
-    try {
-      const pathname = new URL(request.url ?? '', 'http://localhost').pathname
-      const match = /^\/ws\/([^/]+)$/.exec(pathname)
-      if (match) documentId = decodeURIComponent(match[1])
-    } catch {
-      sendHttpError(socket, 400, 'Bad request')
-      return
-    }
-
-    if (!documentId || !UUID_PATTERN.test(documentId) || !repository.get(documentId)) {
-      sendHttpError(socket, 404, 'Document not found')
-      return
-    }
-
-    webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-      connectToRoom(webSocket, documentId)
-    })
-  })
-
   return {
     activeRoomCount: () => rooms.size,
     getActiveDocument: (documentId) => rooms.get(documentId)?.doc,
     isDocumentActive: (documentId) => rooms.has(documentId),
+    handleUpgrade: (request, socket, head, documentId) => {
+      webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+        connectToRoom(webSocket, documentId)
+      })
+    },
     close: () => {
       closePromise ??= (async () => {
         clearInterval(heartbeatInterval)

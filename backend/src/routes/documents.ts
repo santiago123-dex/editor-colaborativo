@@ -3,9 +3,11 @@ import { Router } from 'express'
 import * as Y from 'yjs'
 import { DOCUMENT_TEXT, TIPTAP_FRAGMENT, UUID_PATTERN } from '../constants.js'
 import type { DocumentRepository } from '../db/document-repository.js'
+import type { MessageRepository } from '../db/message-repository.js'
 
 export const createDocumentsRouter = (
   repository: DocumentRepository,
+  messageRepository: MessageRepository,
   getActiveDocument: (documentId: string) => Y.Doc | undefined,
   isDocumentActive: (documentId: string) => boolean,
 ): Router => {
@@ -20,6 +22,24 @@ export const createDocumentsRouter = (
 
   router.get('/', (_request, response) => {
     response.json(repository.list())
+  })
+
+  router.get('/:id/messages', (request, response) => {
+    if (!UUID_PATTERN.test(request.params.id) || !repository.get(request.params.id)) {
+      response.status(404).json({ error: 'Document not found' })
+      return
+    }
+
+    const rawLimit = request.query.limit
+    if (
+      rawLimit !== undefined &&
+      (typeof rawLimit !== 'string' || !/^[1-9][0-9]?$/.test(rawLimit) || Number(rawLimit) > 50)
+    ) {
+      response.status(400).json({ error: 'Invalid limit' })
+      return
+    }
+
+    response.json(messageRepository.listRecent(request.params.id, rawLimit === undefined ? 50 : Number(rawLimit)))
   })
 
   router.get('/:id', (request, response) => {

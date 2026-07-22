@@ -19,4 +19,20 @@ export const initializeSchema = (database: Database.Database): void => {
       database.exec('UPDATE documents SET updated_at = created_at')
     })()
   }
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      document_id TEXT NOT NULL,
+      client_message_id TEXT NOT NULL,
+      author TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+      UNIQUE (document_id, client_message_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS messages_document_created_id_idx
+      ON messages (document_id, created_at DESC, id DESC);
+  `)
 }
