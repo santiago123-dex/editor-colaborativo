@@ -1,28 +1,170 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
-import { createDocument, getDocuments } from '../api/documents'
+import { createDocument, deleteDocument, getDocuments, HttpError } from '../api/documents'
 import { DocumentList } from './DocumentList'
 
-vi.mock('../api/documents', () => ({
+vi.mock('../api/documents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api/documents')>()),
   createDocument: vi.fn(),
+  deleteDocument: vi.fn(),
   getDocuments: vi.fn(),
 }))
 
 const mockedGetDocuments = vi.mocked(getDocuments)
 const mockedCreateDocument = vi.mocked(createDocument)
+const mockedDeleteDocument = vi.mocked(deleteDocument)
+
+const document = {
+  id: 'doc-1',
+  title: 'Plan semanal',
+  createdAt: '2026-07-20T10:00:00.000Z',
+  updatedAt: '2026-07-22T10:00:00.000Z',
+}
+
+const secondDocument = {
+  id: 'doc-2',
+  title: 'Acta del equipo',
+  createdAt: '2026-07-21T10:00:00.000Z',
+  updatedAt: '2026-07-21T12:00:00.000Z',
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
 
 describe('DocumentList', () => {
   it('shows existing documents and opens the selected one', async () => {
     const onOpenDocument = vi.fn()
-    mockedGetDocuments.mockResolvedValue([
-      { id: 'doc-1', title: 'Plan semanal', createdAt: '2026-07-22T10:00:00.000Z' },
-    ])
+    mockedGetDocuments.mockResolvedValue([document])
 
     render(<DocumentList onOpenDocument={onOpenDocument} />)
 
     expect(await screen.findByText('Plan semanal')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /plan semanal/i }))
+    fireEvent.click(screen.getByRole('button', { name: /abrir plan semanal/i }))
     expect(onOpenDocument).toHaveBeenCalledWith('doc-1')
+    expect(screen.getByText(/^última edición:/i).closest('time')).toHaveAttribute(
+      'datetime',
+      document.updatedAt,
+    )
+  })
+
+  it('renders open and delete as separate accessible buttons', async () => {
+    mockedGetDocuments.mockResolvedValue([document])
+
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+
+    const openButton = await screen.findByRole('button', { name: /abrir plan semanal/i })
+    const deleteButton = screen.getByRole('button', { name: /eliminar plan semanal/i })
+    expect(openButton).not.toContainElement(deleteButton)
+    expect(deleteButton).not.toContainElement(openButton)
+  })
+
+  it('opens an accessible confirmation dialog and cancels without deleting', async () => {
+    mockedGetDocuments.mockResolvedValue([document])
+
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('Plan semanal')
+    expect(dialog).toHaveClass('delete-dialog')
+    expect(dialog.parentElement).toHaveClass('dialog-backdrop')
+    const cancelButton = within(dialog).getByRole('button', { name: /cancelar/i })
+    expect(cancelButton).toHaveFocus()
+    fireEvent.click(cancelButton)
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(mockedDeleteDocument).not.toHaveBeenCalled()
+    expect(screen.getByText('Plan semanal')).toBeInTheDocument()
+  })
+
+  it('closes the delete dialog with Escape and restores focus to its trigger', async () => {
+    mockedGetDocuments.mockResolvedValue([document])
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+    const trigger = await screen.findByRole('button', { name: /eliminar plan semanal/i })
+
+    fireEvent.click(trigger)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+  })
+
+  it('traps focus between the delete dialog actions', async () => {
+    mockedGetDocuments.mockResolvedValue([document])
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    const dialog = screen.getByRole('dialog')
+    const cancelButton = within(dialog).getByRole('button', { name: /cancelar/i })
+    const deleteButton = within(dialog).getByRole('button', { name: /eliminar definitivamente/i })
+
+    deleteButton.focus()
+    fireEvent.keyDown(dialog, { key: 'Tab' })
+    expect(cancelButton).toHaveFocus()
+    cancelButton.focus()
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
+    expect(deleteButton).toHaveFocus()
+  })
+
+  it('removes a document after confirming a successful deletion', async () => {
+    mockedGetDocuments.mockResolvedValue([document])
+    mockedDeleteDocument.mockResolvedValue()
+
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    fireEvent.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
+
+    await waitFor(() => expect(screen.queryByText('Plan semanal')).not.toBeInTheDocument())
+    expect(mockedDeleteDocument).toHaveBeenCalledWith('doc-1')
+  })
+
+  it('keeps the document and reports a deletion error', async () => {
+    mockedGetDocuments.mockResolvedValue([document])
+    mockedDeleteDocument.mockRejectedValue(new Error('No se pudo eliminar el documento'))
+
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    fireEvent.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('No se pudo eliminar el documento')
+    expect(screen.queryByRole('button', { name: /reintentar/i })).not.toBeInTheDocument()
+    expect(screen.getByText('Plan semanal')).toBeInTheDocument()
+  })
+
+  it('explains a 409 without assuming another person and offers a clear retry flow', async () => {
+    mockedGetDocuments.mockResolvedValue([document])
+    mockedDeleteDocument.mockRejectedValue(new HttpError(409, 'Conflict'))
+
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    fireEvent.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('El documento sigue abierto en alguna sesión')
+    expect(alert).not.toHaveTextContent(/otra persona/i)
+    fireEvent.click(within(alert).getByRole('button', { name: /reintentar eliminación/i }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('Plan semanal')
+  })
+
+  it('blocks every delete action while one deletion is pending', async () => {
+    const deletion = deferred<void>()
+    mockedGetDocuments.mockResolvedValue([document, secondDocument])
+    mockedDeleteDocument.mockReturnValue(deletion.promise)
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    fireEvent.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
+
+    expect(screen.getByRole('button', { name: /eliminando plan semanal/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /eliminar acta del equipo/i })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: /eliminar acta del equipo/i }))
+    expect(mockedDeleteDocument).toHaveBeenCalledTimes(1)
+
+    await act(async () => deletion.resolve())
   })
 
   it('creates a document and opens it', async () => {
@@ -39,6 +181,54 @@ describe('DocumentList', () => {
     await waitFor(() => expect(onOpenDocument).toHaveBeenCalledWith('doc-new'))
   })
 
+  it('does not offer a list reload retry for create errors', async () => {
+    mockedGetDocuments.mockResolvedValue([])
+    mockedCreateDocument.mockRejectedValue(new Error('No se pudo crear el documento'))
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /nuevo documento/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('No se pudo crear el documento')
+    expect(screen.queryByRole('button', { name: /reintentar/i })).not.toBeInTheDocument()
+  })
+
+  it('offers retry only when loading the list fails', async () => {
+    mockedGetDocuments.mockRejectedValue(new Error('No se pudieron cargar los documentos'))
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: /reintentar/i })).toBeInTheDocument()
+  })
+
+  it('filters documents by title', async () => {
+    mockedGetDocuments.mockResolvedValue([document, secondDocument])
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+    await screen.findByText('Plan semanal')
+
+    fireEvent.change(screen.getByRole('searchbox', { name: /buscar por título/i }), {
+      target: { value: 'acta' },
+    })
+
+    expect(screen.getByText('Acta del equipo')).toBeInTheDocument()
+    expect(screen.queryByText('Plan semanal')).not.toBeInTheDocument()
+  })
+
+  it('sorts documents by title', async () => {
+    mockedGetDocuments.mockResolvedValue([document, secondDocument])
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+    await screen.findByText('Plan semanal')
+
+    fireEvent.change(screen.getByRole('combobox', { name: /ordenar documentos/i }), {
+      target: { value: 'title' },
+    })
+
+    const cards = within(screen.getByRole('region', { name: /documentos existentes/i }))
+      .getAllByRole('article')
+    expect(cards.map((card) => card.querySelector('strong')?.textContent)).toEqual([
+      'Acta del equipo',
+      'Plan semanal',
+    ])
+  })
+
   it('shows an empty state when there are no documents', async () => {
     mockedGetDocuments.mockResolvedValue([])
 
@@ -46,4 +236,5 @@ describe('DocumentList', () => {
 
     expect(await screen.findByText(/todavía no hay documentos/i)).toBeInTheDocument()
   })
+
 })

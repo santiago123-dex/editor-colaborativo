@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   createDocument,
+  deleteDocument,
   getDocuments,
+  HttpError,
   type DocumentSummary,
 } from '../api/documents'
 
@@ -9,46 +11,157 @@ interface DocumentListProps {
   onOpenDocument: (documentId: string) => void
 }
 
+type SortOption = 'updated' | 'created' | 'title'
+
+function getDocumentTitle(document: DocumentSummary) {
+  return document.title.trim() || 'Documento sin título'
+}
+
+function formatUpdatedAt(value: string) {
+  const date = new Date(value)
+  const elapsedDays = Math.floor((Date.now() - date.getTime()) / 86_400_000)
+
+  if (elapsedDays >= 0 && elapsedDays < 7) {
+    const relative = elapsedDays === 0 ? 'hoy' : elapsedDays === 1 ? 'ayer' : `hace ${elapsedDays} días`
+    const time = new Intl.DateTimeFormat('es-AR', { timeStyle: 'short' }).format(date)
+    return `${relative}, ${time}`
+  }
+
+  return new Intl.DateTimeFormat('es-AR', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date)
+}
+
+function LoadingSkeleton() {
+  return (
+    <section className="document-skeleton" role="status" aria-label="Cargando documentos">
+      <span className="sr-only">Cargando documentos…</span>
+      {[1, 2, 3].map((item) => (
+        <div className="document-skeleton__row" key={item} aria-hidden="true">
+          <span />
+          <div><strong /><small /></div>
+        </div>
+      ))}
+    </section>
+  )
+}
+
 export function DocumentList({ onOpenDocument }: DocumentListProps) {
   const [documents, setDocuments] = useState<DocumentSummary[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [documentToDelete, setDocumentToDelete] = useState<DocumentSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [deleteConflict, setDeleteConflict] = useState<DocumentSummary | null>(null)
+  const [canRetryLoad, setCanRetryLoad] = useState(false)
+  const [query, setQuery] = useState('')
+  const [sortBy, setSortBy] = useState<SortOption>('updated')
+  const [reloadKey, setReloadKey] = useState(0)
+  const cancelDeleteRef = useRef<HTMLButtonElement>(null)
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null)
+  const deletionPendingRef = useRef(false)
 
   useEffect(() => {
-    let isCurrent = true
+    const controller = new AbortController()
+    setIsLoading(true)
+    setError(null)
+    setDeleteConflict(null)
+    setCanRetryLoad(false)
 
-    getDocuments()
-      .then((loadedDocuments) => {
-        if (isCurrent) setDocuments(loadedDocuments)
-      })
+    getDocuments(controller.signal)
+      .then(setDocuments)
       .catch((loadError: unknown) => {
-        if (isCurrent) {
-          setError(loadError instanceof Error ? loadError.message : 'Ocurrió un error inesperado')
-        }
+        if (controller.signal.aborted) return
+        setError(loadError instanceof Error ? loadError.message : 'Ocurrió un error inesperado')
+        setCanRetryLoad(true)
       })
       .finally(() => {
-        if (isCurrent) setIsLoading(false)
+        if (!controller.signal.aborted) setIsLoading(false)
       })
 
-    // Ignore a request that finishes after navigating away from this screen.
-    return () => {
-      isCurrent = false
-    }
-  }, [])
+    return () => controller.abort()
+  }, [reloadKey])
+
+  useEffect(() => {
+    if (documentToDelete) cancelDeleteRef.current?.focus()
+  }, [documentToDelete])
+
+  const visibleDocuments = documents
+    .filter((document) => getDocumentTitle(document).toLocaleLowerCase('es-AR').includes(
+      query.trim().toLocaleLowerCase('es-AR'),
+    ))
+    .sort((left, right) => {
+      if (sortBy === 'title') {
+        return getDocumentTitle(left).localeCompare(getDocumentTitle(right), 'es-AR')
+      }
+      const field = sortBy === 'created' ? 'createdAt' : 'updatedAt'
+      return new Date(right[field]).getTime() - new Date(left[field]).getTime()
+    })
 
   async function handleCreateDocument() {
     setIsCreating(true)
     setError(null)
-
+    setCanRetryLoad(false)
     try {
       const document = await createDocument()
       onOpenDocument(document.id)
     } catch (createError) {
-      setError(
-        createError instanceof Error ? createError.message : 'Ocurrió un error inesperado',
-      )
+      setError(createError instanceof Error ? createError.message : 'Ocurrió un error inesperado')
       setIsCreating(false)
+    }
+  }
+
+  async function handleDeleteDocument(document: DocumentSummary) {
+    if (deletionPendingRef.current) return
+    deletionPendingRef.current = true
+    setDeletingId(document.id)
+    closeDeleteDialog()
+    setError(null)
+    setDeleteConflict(null)
+    setCanRetryLoad(false)
+
+    try {
+      await deleteDocument(document.id)
+      setDocuments((current) => current.filter((item) => item.id !== document.id))
+    } catch (deleteError) {
+      if (deleteError instanceof HttpError && deleteError.status === 409) {
+        setError('El documento sigue abierto en alguna sesión. Cerrá las pestañas o sesiones que lo tengan abierto y volvé a intentar.')
+        setDeleteConflict(document)
+      } else if (deleteError instanceof HttpError && deleteError.status === 404) {
+        setError('El documento ya no existe. Recargá la lista para actualizarla.')
+      } else {
+        setError(deleteError instanceof Error ? deleteError.message : 'Ocurrió un error inesperado')
+      }
+    } finally {
+      deletionPendingRef.current = false
+      setDeletingId(null)
+    }
+  }
+
+  function closeDeleteDialog() {
+    setDocumentToDelete(null)
+    deleteTriggerRef.current?.focus()
+  }
+
+  function handleDialogKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeDeleteDialog()
+      return
+    }
+    if (event.key !== 'Tab') return
+
+    const cancelButton = cancelDeleteRef.current
+    const deleteButton = event.currentTarget.querySelector<HTMLButtonElement>('.danger-button')
+    if (!cancelButton || !deleteButton) return
+    if (!event.shiftKey && document.activeElement === deleteButton) {
+      event.preventDefault()
+      cancelButton.focus()
+    } else if (event.shiftKey && document.activeElement === cancelButton) {
+      event.preventDefault()
+      deleteButton.focus()
     }
   }
 
@@ -60,56 +173,154 @@ export function DocumentList({ onOpenDocument }: DocumentListProps) {
           <h1>Documentos</h1>
           <p className="subtitle">Creá una idea y escribila en equipo, en tiempo real.</p>
         </div>
-        <button
-          className="primary-button"
-          type="button"
-          onClick={handleCreateDocument}
-          disabled={isCreating}
-        >
+        <button className="primary-button" type="button" onClick={handleCreateDocument} disabled={isCreating}>
           {isCreating ? 'Creando…' : 'Nuevo documento'}
         </button>
       </header>
 
-      {error && <p className="message message--error" role="alert">{error}</p>}
-      {isLoading && <p className="message">Cargando documentos…</p>}
-
-      {!isLoading && documents.length === 0 && (
-        <section className="empty-state">
-          <span className="empty-state__mark" aria-hidden="true">Aa</span>
-          <h2>Todavía no hay documentos</h2>
-          <p>Creá el primero para empezar a colaborar.</p>
-        </section>
+      {error && (
+        <div className="message message--error list-error" role="alert">
+          <span>{error}</span>
+          {canRetryLoad && (
+            <button type="button" onClick={() => setReloadKey((key) => key + 1)}>Reintentar</button>
+          )}
+          {deleteConflict && (
+            <button
+              type="button"
+              onClick={() => {
+                setError(null)
+                setDeleteConflict(null)
+                setDocumentToDelete(deleteConflict)
+              }}
+            >
+              Reintentar eliminación
+            </button>
+          )}
+        </div>
       )}
 
-      {!isLoading && documents.length > 0 && (
-        <section className="document-grid" aria-label="Documentos existentes">
-          {documents.map((document) => {
-            const title = document.title.trim() || 'Documento sin título'
+      {isLoading ? <LoadingSkeleton /> : (
+        <>
+          {documents.length > 0 && (
+            <section className="document-controls" aria-label="Buscar y ordenar documentos">
+              <label className="search-control">
+                <span>Buscar por título</span>
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Buscar documentos…"
+                />
+              </label>
+              <label className="sort-control">
+                <span>Ordenar documentos</span>
+                <select value={sortBy} onChange={(event) => setSortBy(event.target.value as SortOption)}>
+                  <option value="updated">Última edición</option>
+                  <option value="created">Más recientes</option>
+                  <option value="title">Nombre A–Z</option>
+                </select>
+              </label>
+            </section>
+          )}
 
-            return (
-              <button
-                className="document-card"
-                type="button"
-                key={document.id}
-                onClick={() => onOpenDocument(document.id)}
-                aria-label={`Abrir ${title}`}
-              >
-                <span className="document-card__icon" aria-hidden="true">¶</span>
-                <span className="document-card__content">
-                  <strong>{title}</strong>
-                  <time dateTime={document.createdAt}>
-                    {new Intl.DateTimeFormat('es-AR', {
-                      dateStyle: 'medium',
-                      timeStyle: 'short',
-                    }).format(new Date(document.createdAt))}
-                  </time>
-                </span>
-                <span className="document-card__arrow" aria-hidden="true">→</span>
+          {documents.length === 0 && !error && (
+            <section className="empty-state">
+              <span className="empty-state__mark" aria-hidden="true">Aa</span>
+              <h2>Todavía no hay documentos</h2>
+              <p>Creá el primero para empezar a colaborar.</p>
+            </section>
+          )}
+
+          {documents.length > 0 && visibleDocuments.length === 0 && (
+            <section className="empty-state empty-state--search">
+              <h2>No encontramos documentos</h2>
+              <p>Probá con otro título o limpiá la búsqueda.</p>
+              <button className="secondary-button" type="button" onClick={() => setQuery('')}>
+                Limpiar búsqueda
               </button>
-            )
-          })}
-        </section>
+            </section>
+          )}
+
+          {visibleDocuments.length > 0 && (
+            <section className="document-grid" aria-label="Documentos existentes">
+              {visibleDocuments.map((document) => {
+                const title = getDocumentTitle(document)
+                const isDeleting = deletingId === document.id
+                return (
+                  <article className="document-card" key={document.id}>
+                    <button
+                      className="document-card__open"
+                      type="button"
+                      onClick={() => onOpenDocument(document.id)}
+                      aria-label={`Abrir ${title}`}
+                      disabled={isDeleting}
+                    >
+                      <span className="document-card__icon" aria-hidden="true">¶</span>
+                      <span className="document-card__content">
+                        <strong>{title}</strong>
+                        <time dateTime={document.updatedAt} title={new Date(document.updatedAt).toLocaleString('es-AR')}>
+                          Última edición: {formatUpdatedAt(document.updatedAt)}
+                        </time>
+                      </span>
+                      <span className="document-card__arrow" aria-hidden="true">→</span>
+                    </button>
+                    <button
+                      className="document-card__delete"
+                      type="button"
+                      onClick={(event) => {
+                        if (deletionPendingRef.current) return
+                        deleteTriggerRef.current = event.currentTarget
+                        setDocumentToDelete(document)
+                      }}
+                      aria-label={isDeleting ? `Eliminando ${title}` : `Eliminar ${title}`}
+                      disabled={deletingId !== null}
+                    >
+                      {isDeleting ? 'Eliminando…' : 'Eliminar'}
+                    </button>
+                  </article>
+                )
+              })}
+            </section>
+          )}
+        </>
       )}
+
+      {documentToDelete && (
+        <div className="dialog-backdrop">
+          <div
+            className="delete-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-dialog-title"
+            aria-describedby="delete-dialog-description"
+            onKeyDown={handleDialogKeyDown}
+          >
+            <p className="eyebrow">ACCIÓN PERMANENTE</p>
+            <h2 id="delete-dialog-title">Eliminar documento</h2>
+            <p id="delete-dialog-description">
+              ¿Querés eliminar “{getDocumentTitle(documentToDelete)}”? Esta acción no se puede deshacer.
+            </p>
+            <div className="delete-dialog__actions">
+              <button
+                ref={cancelDeleteRef}
+                className="secondary-button"
+                type="button"
+                onClick={closeDeleteDialog}
+              >
+                Cancelar
+              </button>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => handleDeleteDocument(documentToDelete)}
+              >
+                Eliminar definitivamente
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </main>
   )
 }
