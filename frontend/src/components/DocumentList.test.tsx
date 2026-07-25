@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 import { createDocument, deleteDocument, getDocuments, HttpError } from '../api/documents'
 import { useAuthSession } from '../auth/AuthSessionContext'
@@ -87,6 +88,7 @@ describe('DocumentList', () => {
   })
 
   it('offers a session retry when creation is unavailable after bootstrap error', async () => {
+    const user = userEvent.setup()
     const retry = vi.fn()
     mockedUseAuthSession.mockReturnValue({
       status: 'error', session: null, revision: 0, error: 'Sin backend',
@@ -96,19 +98,20 @@ describe('DocumentList', () => {
     render(<DocumentList onOpenDocument={vi.fn()} />)
 
     const retryButtons = await screen.findAllByRole('button', { name: /reintentar sesión/i })
-    fireEvent.click(retryButtons[0])
+    await user.click(retryButtons[0])
     expect(retry).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('button', { name: /nuevo documento/i })).toBeDisabled()
   })
 
   it('shows existing documents and opens the selected one', async () => {
+    const user = userEvent.setup()
     const onOpenDocument = vi.fn()
     mockedGetDocuments.mockResolvedValue([document])
 
     render(<DocumentList onOpenDocument={onOpenDocument} />)
 
     expect(await screen.findByText('Plan semanal')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /abrir plan semanal/i }))
+    await user.click(screen.getByRole('button', { name: /abrir plan semanal/i }))
     expect(onOpenDocument).toHaveBeenCalledWith('doc-1')
     expect(screen.getByText(/^última edición:/i).closest('time')).toHaveAttribute(
       'datetime',
@@ -136,10 +139,11 @@ describe('DocumentList', () => {
   })
 
   it('opens an accessible confirmation dialog and cancels without deleting', async () => {
+    const user = userEvent.setup()
     mockedGetDocuments.mockResolvedValue([document])
 
     render(<DocumentList onOpenDocument={vi.fn()} />)
-    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    await user.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
 
     const dialog = screen.getByRole('dialog')
     expect(dialog).toHaveTextContent('Plan semanal')
@@ -147,7 +151,7 @@ describe('DocumentList', () => {
     expect(dialog.parentElement).toHaveClass('dialog-backdrop')
     const cancelButton = within(dialog).getByRole('button', { name: /cancelar/i })
     expect(cancelButton).toHaveFocus()
-    fireEvent.click(cancelButton)
+    await user.click(cancelButton)
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(mockedDeleteDocument).not.toHaveBeenCalled()
@@ -155,52 +159,56 @@ describe('DocumentList', () => {
   })
 
   it('closes the delete dialog with Escape and restores focus to its trigger', async () => {
+    const user = userEvent.setup()
     mockedGetDocuments.mockResolvedValue([document])
     render(<DocumentList onOpenDocument={vi.fn()} />)
     const trigger = await screen.findByRole('button', { name: /eliminar plan semanal/i })
 
-    fireEvent.click(trigger)
-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    await user.click(trigger)
+    await user.keyboard('{Escape}')
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(trigger).toHaveFocus()
   })
 
   it('traps focus between the delete dialog actions', async () => {
+    const user = userEvent.setup()
     mockedGetDocuments.mockResolvedValue([document])
     render(<DocumentList onOpenDocument={vi.fn()} />)
-    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    await user.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
     const dialog = screen.getByRole('dialog')
     const cancelButton = within(dialog).getByRole('button', { name: /cancelar/i })
     const deleteButton = within(dialog).getByRole('button', { name: /eliminar definitivamente/i })
 
     deleteButton.focus()
-    fireEvent.keyDown(dialog, { key: 'Tab' })
+    await user.tab()
     expect(cancelButton).toHaveFocus()
     cancelButton.focus()
-    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
+    await user.tab({ shift: true })
     expect(deleteButton).toHaveFocus()
   })
 
   it('removes a document after confirming a successful deletion', async () => {
+    const user = userEvent.setup()
     mockedGetDocuments.mockResolvedValue([document])
     mockedDeleteDocument.mockResolvedValue()
 
     render(<DocumentList onOpenDocument={vi.fn()} />)
-    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
-    fireEvent.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
+    await user.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    await user.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
 
     await waitFor(() => expect(screen.queryByText('Plan semanal')).not.toBeInTheDocument())
     expect(mockedDeleteDocument).toHaveBeenCalledWith('doc-1')
   })
 
   it('keeps the document and reports a deletion error', async () => {
+    const user = userEvent.setup()
     mockedGetDocuments.mockResolvedValue([document])
     mockedDeleteDocument.mockRejectedValue(new Error('No se pudo eliminar el documento'))
 
     render(<DocumentList onOpenDocument={vi.fn()} />)
-    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
-    fireEvent.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
+    await user.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    await user.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('No se pudo eliminar el documento')
     expect(screen.queryByRole('button', { name: /reintentar/i })).not.toBeInTheDocument()
@@ -208,50 +216,54 @@ describe('DocumentList', () => {
   })
 
   it('keeps the document and explains a 403 permission denial', async () => {
+    const user = userEvent.setup()
     mockedGetDocuments.mockResolvedValue([document])
     mockedDeleteDocument.mockRejectedValue(new HttpError(403, 'Forbidden'))
     render(<DocumentList onOpenDocument={vi.fn()} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
-    fireEvent.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
+    await user.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    await user.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/permiso/i)
     expect(screen.getByText('Plan semanal')).toBeInTheDocument()
   })
 
   it('explains a 409 without assuming another person and offers a clear retry flow', async () => {
+    const user = userEvent.setup()
     mockedGetDocuments.mockResolvedValue([document])
     mockedDeleteDocument.mockRejectedValue(new HttpError(409, 'Conflict'))
 
     render(<DocumentList onOpenDocument={vi.fn()} />)
-    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
-    fireEvent.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
+    await user.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    await user.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
 
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('El documento sigue abierto en alguna sesión')
     expect(alert).not.toHaveTextContent(/otra persona/i)
-    fireEvent.click(within(alert).getByRole('button', { name: /reintentar eliminación/i }))
+    await user.click(within(alert).getByRole('button', { name: /reintentar eliminación/i }))
     expect(screen.getByRole('dialog')).toHaveTextContent('Plan semanal')
   })
 
   it('blocks every delete action while one deletion is pending', async () => {
+    const user = userEvent.setup()
     const deletion = deferred<void>()
     mockedGetDocuments.mockResolvedValue([document, secondDocument])
     mockedDeleteDocument.mockReturnValue(deletion.promise)
     render(<DocumentList onOpenDocument={vi.fn()} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
-    fireEvent.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
+    await user.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    await user.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
 
     expect(screen.getByRole('button', { name: /eliminando plan semanal/i })).toBeDisabled()
     expect(screen.getByRole('button', { name: /eliminar acta del equipo/i })).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: /eliminar acta del equipo/i }))
+    await user.click(screen.getByRole('button', { name: /eliminar acta del equipo/i }))
     expect(mockedDeleteDocument).toHaveBeenCalledTimes(1)
 
     await act(async () => deletion.resolve())
   })
 
   it('creates a document and opens it', async () => {
+    const user = userEvent.setup()
     mockedGetDocuments.mockResolvedValue([])
     mockedCreateDocument.mockResolvedValue({
       id: 'doc-new',
@@ -260,17 +272,18 @@ describe('DocumentList', () => {
     const onOpenDocument = vi.fn()
 
     render(<DocumentList onOpenDocument={onOpenDocument} />)
-    fireEvent.click(await screen.findByRole('button', { name: /nuevo documento/i }))
+    await user.click(await screen.findByRole('button', { name: /nuevo documento/i }))
 
     await waitFor(() => expect(onOpenDocument).toHaveBeenCalledWith('doc-new'))
   })
 
   it('does not offer a list reload retry for create errors', async () => {
+    const user = userEvent.setup()
     mockedGetDocuments.mockResolvedValue([])
     mockedCreateDocument.mockRejectedValue(new Error('No se pudo crear el documento'))
     render(<DocumentList onOpenDocument={vi.fn()} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: /nuevo documento/i }))
+    await user.click(await screen.findByRole('button', { name: /nuevo documento/i }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('No se pudo crear el documento')
     expect(screen.queryByRole('button', { name: /reintentar/i })).not.toBeInTheDocument()
@@ -284,26 +297,24 @@ describe('DocumentList', () => {
   })
 
   it('filters documents by title', async () => {
+    const user = userEvent.setup()
     mockedGetDocuments.mockResolvedValue([document, secondDocument])
     render(<DocumentList onOpenDocument={vi.fn()} />)
     await screen.findByText('Plan semanal')
 
-    fireEvent.change(screen.getByRole('searchbox', { name: /buscar por título/i }), {
-      target: { value: 'acta' },
-    })
+    await user.type(screen.getByRole('searchbox', { name: /buscar por título/i }), 'acta')
 
     expect(screen.getByText('Acta del equipo')).toBeInTheDocument()
     expect(screen.queryByText('Plan semanal')).not.toBeInTheDocument()
   })
 
   it('sorts documents by title', async () => {
+    const user = userEvent.setup()
     mockedGetDocuments.mockResolvedValue([document, secondDocument])
     render(<DocumentList onOpenDocument={vi.fn()} />)
     await screen.findByText('Plan semanal')
 
-    fireEvent.change(screen.getByRole('combobox', { name: /ordenar documentos/i }), {
-      target: { value: 'title' },
-    })
+    await user.selectOptions(screen.getByRole('combobox', { name: /ordenar documentos/i }), 'title')
 
     const cards = within(screen.getByRole('region', { name: /documentos existentes/i }))
       .getAllByRole('article')

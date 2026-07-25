@@ -5,10 +5,11 @@ import type { DocumentRepository } from '../db/document-repository.js'
 import type { ChatWebSocket } from './chat.js'
 import type { CollaborationWebSocket } from './collaboration.js'
 
-const sendHttpError = (socket: Duplex, status: 400 | 404, message: string) => {
+const sendHttpError = (socket: Duplex, status: 400 | 403 | 404, message: string) => {
+  const statusText = status === 403 ? 'Forbidden' : status === 404 ? 'Not Found' : 'Bad Request'
   const body = JSON.stringify({ error: message })
   socket.end(
-    `HTTP/1.1 ${status} ${status === 404 ? 'Not Found' : 'Bad Request'}\r\n` +
+    `HTTP/1.1 ${status} ${statusText}\r\n` +
       'Connection: close\r\n' +
       'Content-Type: application/json\r\n' +
       `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
@@ -20,6 +21,7 @@ export const attachUpgradeRouter = (
   repository: DocumentRepository,
   collaboration: CollaborationWebSocket,
   chat: ChatWebSocket,
+  allowedOrigins: Set<string>,
 ): void => {
   httpServer.on('upgrade', (request, socket, head) => {
     let route: CollaborationWebSocket | ChatWebSocket | undefined
@@ -44,6 +46,15 @@ export const attachUpgradeRouter = (
       sendHttpError(socket, 404, 'Document not found')
       return
     }
+
+    if (allowedOrigins.size > 0) {
+      const origin = request.headers.origin
+      if (origin === undefined || !allowedOrigins.has(origin)) {
+        sendHttpError(socket, 403, 'Origin not allowed')
+        return
+      }
+    }
+
     route.handleUpgrade(request, socket, head, documentId)
   })
 }

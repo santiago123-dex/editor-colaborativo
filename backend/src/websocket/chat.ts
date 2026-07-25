@@ -67,12 +67,17 @@ const parseMessage = (value: unknown): ClientMessage | undefined => {
 
 export const createChatWebSocket = (
   repository: MessageRepository,
-  options: { now: () => Date; heartbeatIntervalMs: number },
+  options: {
+    now: () => Date
+    heartbeatIntervalMs: number
+    afterTransportClose?: () => void
+  },
 ): ChatWebSocket => {
   const rooms = new Map<string, ChatRoom>()
   const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 })
   const aliveClients = new WeakSet<WebSocket>()
   let closePromise: Promise<void> | undefined
+  let shuttingDown = false
 
   const heartbeatInterval = setInterval(() => {
     for (const client of webSocketServer.clients) {
@@ -156,6 +161,7 @@ export const createChatWebSocket = (
     })
 
     socket.on('close', () => {
+      if (shuttingDown) return
       room.clients.delete(socket)
       if (room.clients.size === 0 && rooms.get(documentId) === room) rooms.delete(documentId)
     })
@@ -172,10 +178,18 @@ export const createChatWebSocket = (
     close: () => {
       closePromise ??= (async () => {
         clearInterval(heartbeatInterval)
+        shuttingDown = true
         for (const client of webSocketServer.clients) client.terminate()
-        await new Promise<void>((resolve, reject) => {
-          webSocketServer.close((error) => (error ? reject(error) : resolve()))
+        await new Promise<void>((resolve) => {
+          webSocketServer.close(() => resolve())
         })
+        try {
+          options.afterTransportClose?.()
+        } catch (error) {
+          closePromise = undefined
+          shuttingDown = false
+          throw error
+        }
         rooms.clear()
       })()
       return closePromise
