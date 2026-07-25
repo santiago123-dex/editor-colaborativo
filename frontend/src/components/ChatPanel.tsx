@@ -46,9 +46,22 @@ function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]): ChatMes
       existing.id === message.id || existing.clientMessageId === message.clientMessageId
     ))) merged.push(message)
   }
-  return merged.sort((left, right) => (
-    left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
-  ))
+  return merged.sort((left, right) => {
+    const leftTime = Date.parse(left.createdAt)
+    const rightTime = Date.parse(right.createdAt)
+    if (Number.isNaN(leftTime)) return Number.isNaN(rightTime) ? left.id.localeCompare(right.id) : 1
+    if (Number.isNaN(rightTime)) return -1
+    return leftTime - rightTime || left.id.localeCompare(right.id)
+  })
+}
+
+function getMessageDate(createdAt: string) {
+  const date = new Date(createdAt)
+  if (Number.isNaN(date.getTime())) return null
+  const day = [date.getFullYear(), date.getMonth() + 1, date.getDate()]
+    .map((part, index) => index === 0 ? String(part) : String(part).padStart(2, '0'))
+    .join('-')
+  return { date, day }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -352,17 +365,33 @@ export function ChatPanel({
             <span>Cuando alguien escriba, la conversación va a aparecer acá.</span>
           </li>
         )}
-        {messages.map((message) => (
-          <li key={message.id} className="chat-message">
-            <div className="chat-message__meta">
-              <strong>{message.author}</strong>
-              <time dateTime={message.createdAt}>
-                {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </time>
-            </div>
-            <p>{message.content}</p>
-          </li>
-        ))}
+        {messages.map((message, index) => {
+          const messageDate = getMessageDate(message.createdAt)
+          const previousDate = index > 0 ? getMessageDate(messages[index - 1].createdAt) : null
+          const startsDay = messageDate !== null && messageDate.day !== previousDate?.day
+          return (
+            <li key={message.id} className="chat-message">
+              {startsDay && (
+                <div className="chat-date-separator" role="separator">
+                  <time dateTime={messageDate.day}>
+                    {messageDate.date.toLocaleDateString([], {
+                      weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+                    })}
+                  </time>
+                </div>
+              )}
+              <div className="chat-message__meta">
+                <strong>{message.author}</strong>
+                {messageDate ? (
+                  <time dateTime={message.createdAt}>
+                    {messageDate.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </time>
+                ) : <span>Hora desconocida</span>}
+              </div>
+              <p>{message.content}</p>
+            </li>
+          )
+        })}
       </ol>
 
       {error && <p className="chat-error" role="alert">{error}</p>}

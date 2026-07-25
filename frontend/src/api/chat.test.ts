@@ -18,7 +18,7 @@ describe('chat API', () => {
     await expect(getChatMessages('doc/one', controller.signal)).resolves.toEqual(messages)
     expect(fetch).toHaveBeenCalledWith(
       expect.stringMatching(/\/documents\/doc%2Fone\/messages\?limit=50$/),
-      { signal: controller.signal },
+      { signal: controller.signal, credentials: 'include' },
     )
   })
 

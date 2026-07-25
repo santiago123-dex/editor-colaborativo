@@ -151,6 +151,36 @@ describe('ChatPanel', () => {
     ])
   })
 
+  it('renders accessible date separators whenever the chronological day changes', async () => {
+    chatApiMock.getChatMessages.mockResolvedValue([
+      { ...historyMessage, id: 'third', clientMessageId: 'third', content: 'Día dos', createdAt: '2026-07-23T09:00:00.000Z' },
+      { ...historyMessage, id: 'first', clientMessageId: 'first', content: 'Día uno temprano', createdAt: '2026-07-22T08:00:00.000Z' },
+      { ...historyMessage, id: 'second', clientMessageId: 'second', content: 'Día uno tarde', createdAt: '2026-07-22T20:00:00.000Z' },
+    ])
+    renderChat()
+
+    const separators = await screen.findAllByRole('separator')
+    expect(separators).toHaveLength(2)
+    expect(separators[0].querySelector('time')).toHaveAttribute('datetime', '2026-07-22')
+    expect(separators[1].querySelector('time')).toHaveAttribute('datetime', '2026-07-23')
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      expect.stringContaining('Día uno temprano'),
+      expect.stringContaining('Día uno tarde'),
+      expect.stringContaining('Día dos'),
+    ])
+  })
+
+  it('keeps invalid history dates usable without rendering Invalid Date', async () => {
+    chatApiMock.getChatMessages.mockResolvedValue([
+      { ...historyMessage, id: 'invalid', clientMessageId: 'invalid', content: 'Fecha rota', createdAt: 'not-a-date' },
+    ])
+    renderChat()
+
+    expect(await screen.findByText('Fecha rota')).toBeInTheDocument()
+    expect(screen.getByText('Hora desconocida')).toBeInTheDocument()
+    expect(screen.queryByText(/invalid date/i)).not.toBeInTheDocument()
+  })
+
   it('does not steal scroll when a new message arrives while reading older messages', async () => {
     chatApiMock.getChatMessages.mockResolvedValue([historyMessage])
     renderChat()

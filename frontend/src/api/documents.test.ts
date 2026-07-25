@@ -6,6 +6,7 @@ import {
   getDocuments,
   updateDocumentTitle,
 } from './documents'
+import { setCsrfToken } from './http'
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
@@ -16,6 +17,9 @@ const documentDetailsContentIsString: Equal<DocumentDetails['content'], string> 
 void documentDetailsContentIsString
 
 describe('documents API', () => {
+  beforeEach(() => setCsrfToken('test-csrf'))
+  afterEach(() => setCsrfToken(null))
+
   it('lists documents using the configured REST endpoint', async () => {
     const documents = [
       {
@@ -30,7 +34,9 @@ describe('documents API', () => {
     )
 
     await expect(getDocuments()).resolves.toEqual(documents)
-    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/documents$/))
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/documents$/), {
+      credentials: 'include',
+    })
   })
 
   it('loads document details and encodes its ID', async () => {
@@ -46,7 +52,9 @@ describe('documents API', () => {
     )
 
     await expect(getDocument('doc/with spaces')).resolves.toEqual(document)
-    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/documents\/doc%2Fwith%20spaces$/))
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/documents\/doc%2Fwith%20spaces$/), {
+      credentials: 'include',
+    })
   })
 
   it('updates a title with JSON headers and returns the normalized response', async () => {
@@ -61,20 +69,24 @@ describe('documents API', () => {
     )
 
     await expect(updateDocumentTitle('doc/1', '  Título normalizado  ')).resolves.toEqual(updated)
-    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/documents\/doc%2F1$/), {
+    const updateInit = vi.mocked(fetch).mock.calls[0][1]
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/documents\/doc%2F1$/), expect.objectContaining({
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ title: '  Título normalizado  ' }),
-    })
+    }))
+    expect(new Headers(updateInit?.headers).get('Content-Type')).toBe('application/json')
+    expect(new Headers(updateInit?.headers).get('X-CSRF-Token')).toBe('test-csrf')
   })
 
   it('deletes a document without parsing the 204 response', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
 
     await expect(deleteDocument('doc/1')).resolves.toBeUndefined()
-    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/documents\/doc%2F1$/), {
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/documents\/doc%2F1$/), expect.objectContaining({
       method: 'DELETE',
-    })
+      credentials: 'include',
+    }))
   })
 
   it('creates an empty document with POST', async () => {
@@ -84,9 +96,10 @@ describe('documents API', () => {
     )
 
     await expect(createDocument()).resolves.toEqual(created)
-    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/documents$/), {
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/documents$/), expect.objectContaining({
       method: 'POST',
-    })
+      credentials: 'include',
+    }))
   })
 
   it('uses the operation fallback when an error has no useful payload', async () => {

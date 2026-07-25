@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 import { createDocument, deleteDocument, getDocuments, HttpError } from '../api/documents'
+import { useAuthSession } from '../auth/AuthSessionContext'
 import { DocumentList } from './DocumentList'
 
 vi.mock('../api/documents', async (importOriginal) => ({
@@ -10,15 +11,19 @@ vi.mock('../api/documents', async (importOriginal) => ({
   getDocuments: vi.fn(),
 }))
 
+vi.mock('../auth/AuthSessionContext', () => ({ useAuthSession: vi.fn() }))
+
 const mockedGetDocuments = vi.mocked(getDocuments)
 const mockedCreateDocument = vi.mocked(createDocument)
 const mockedDeleteDocument = vi.mocked(deleteDocument)
+const mockedUseAuthSession = vi.mocked(useAuthSession)
 
 const document = {
   id: 'doc-1',
   title: 'Plan semanal',
   createdAt: '2026-07-20T10:00:00.000Z',
   updatedAt: '2026-07-22T10:00:00.000Z',
+  canDelete: true,
 }
 
 const secondDocument = {
@@ -26,6 +31,7 @@ const secondDocument = {
   title: 'Acta del equipo',
   createdAt: '2026-07-21T10:00:00.000Z',
   updatedAt: '2026-07-21T12:00:00.000Z',
+  canDelete: true,
 }
 
 function deferred<T>() {
@@ -37,6 +43,64 @@ function deferred<T>() {
 }
 
 describe('DocumentList', () => {
+  beforeEach(() => {
+    mockedUseAuthSession.mockReturnValue({
+      status: 'ready', session: { user: null, csrfToken: 'csrf' }, revision: 1, error: null,
+      login: vi.fn(), register: vi.fn(), logout: vi.fn(), retry: vi.fn(),
+    })
+  })
+
+  it('only offers deletion when canDelete is true', async () => {
+    mockedGetDocuments.mockResolvedValue([document, { ...secondDocument, canDelete: false }])
+
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: /eliminar plan semanal/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /eliminar acta del equipo/i })).not.toBeInTheDocument()
+  })
+
+  it('reloads the list when the accepted session revision changes', async () => {
+    mockedGetDocuments.mockResolvedValue([document])
+    const view = render(<DocumentList onOpenDocument={vi.fn()} />)
+    await screen.findByText('Plan semanal')
+
+    mockedUseAuthSession.mockReturnValue({
+      status: 'ready', session: { user: null, csrfToken: 'csrf' }, revision: 2, error: null,
+      login: vi.fn(), register: vi.fn(), logout: vi.fn(), retry: vi.fn(),
+    })
+    view.rerender(<DocumentList onOpenDocument={vi.fn()} />)
+
+    await waitFor(() => expect(mockedGetDocuments).toHaveBeenCalledTimes(2))
+  })
+
+  it('disables creation while the session is loading and explains why', async () => {
+    mockedUseAuthSession.mockReturnValue({
+      status: 'loading', session: null, revision: 0, error: null,
+      login: vi.fn(), register: vi.fn(), logout: vi.fn(), retry: vi.fn(),
+    })
+    mockedGetDocuments.mockResolvedValue([])
+
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: /nuevo documento/i })).toBeDisabled()
+    expect(screen.getByText(/sesión.*lista/i)).toBeInTheDocument()
+  })
+
+  it('offers a session retry when creation is unavailable after bootstrap error', async () => {
+    const retry = vi.fn()
+    mockedUseAuthSession.mockReturnValue({
+      status: 'error', session: null, revision: 0, error: 'Sin backend',
+      login: vi.fn(), register: vi.fn(), logout: vi.fn(), retry,
+    })
+    mockedGetDocuments.mockResolvedValue([])
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+
+    const retryButtons = await screen.findAllByRole('button', { name: /reintentar sesión/i })
+    fireEvent.click(retryButtons[0])
+    expect(retry).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: /nuevo documento/i })).toBeDisabled()
+  })
+
   it('shows existing documents and opens the selected one', async () => {
     const onOpenDocument = vi.fn()
     mockedGetDocuments.mockResolvedValue([document])
@@ -50,6 +114,14 @@ describe('DocumentList', () => {
       'datetime',
       document.updatedAt,
     )
+  })
+
+  it('renders an accessible fallback when the update date is invalid', async () => {
+    mockedGetDocuments.mockResolvedValue([{ ...document, updatedAt: 'not-a-date' }])
+
+    expect(() => render(<DocumentList onOpenDocument={vi.fn()} />)).not.toThrow()
+    expect(await screen.findByText('Última edición: Fecha desconocida')).toBeInTheDocument()
+    expect(screen.queryByTitle('Invalid Date')).not.toBeInTheDocument()
   })
 
   it('renders open and delete as separate accessible buttons', async () => {
@@ -132,6 +204,18 @@ describe('DocumentList', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('No se pudo eliminar el documento')
     expect(screen.queryByRole('button', { name: /reintentar/i })).not.toBeInTheDocument()
+    expect(screen.getByText('Plan semanal')).toBeInTheDocument()
+  })
+
+  it('keeps the document and explains a 403 permission denial', async () => {
+    mockedGetDocuments.mockResolvedValue([document])
+    mockedDeleteDocument.mockRejectedValue(new HttpError(403, 'Forbidden'))
+    render(<DocumentList onOpenDocument={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /eliminar plan semanal/i }))
+    fireEvent.click(screen.getByRole('button', { name: /eliminar definitivamente/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/permiso/i)
     expect(screen.getByText('Plan semanal')).toBeInTheDocument()
   })
 

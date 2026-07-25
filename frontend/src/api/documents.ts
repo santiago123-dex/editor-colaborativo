@@ -7,6 +7,7 @@ export interface DocumentSummary {
   createdAt: string
   updatedAt: string
   title: string
+  canDelete: boolean
 }
 
 export interface DocumentDetails extends DocumentSummary {

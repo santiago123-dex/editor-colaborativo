@@ -6,6 +6,8 @@ import {
   HttpError,
   type DocumentSummary,
 } from '../api/documents'
+import { useAuthSession } from '../auth/AuthSessionContext'
+import { AuthControls } from './AuthControls'
 
 interface DocumentListProps {
   onOpenDocument: (documentId: string) => void
@@ -19,6 +21,7 @@ function getDocumentTitle(document: DocumentSummary) {
 
 function formatUpdatedAt(value: string) {
   const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Fecha desconocida'
   const elapsedDays = Math.floor((Date.now() - date.getTime()) / 86_400_000)
 
   if (elapsedDays >= 0 && elapsedDays < 7) {
@@ -48,6 +51,7 @@ function LoadingSkeleton() {
 }
 
 export function DocumentList({ onOpenDocument }: DocumentListProps) {
+  const { status: sessionStatus, revision: sessionRevision, retry: retrySession } = useAuthSession()
   const [documents, setDocuments] = useState<DocumentSummary[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
@@ -82,7 +86,7 @@ export function DocumentList({ onOpenDocument }: DocumentListProps) {
       })
 
     return () => controller.abort()
-  }, [reloadKey])
+  }, [reloadKey, sessionRevision])
 
   useEffect(() => {
     if (documentToDelete) cancelDeleteRef.current?.focus()
@@ -101,6 +105,7 @@ export function DocumentList({ onOpenDocument }: DocumentListProps) {
     })
 
   async function handleCreateDocument() {
+    if (sessionStatus !== 'ready') return
     setIsCreating(true)
     setError(null)
     setCanRetryLoad(false)
@@ -131,6 +136,8 @@ export function DocumentList({ onOpenDocument }: DocumentListProps) {
         setDeleteConflict(document)
       } else if (deleteError instanceof HttpError && deleteError.status === 404) {
         setError('El documento ya no existe. Recargá la lista para actualizarla.')
+      } else if (deleteError instanceof HttpError && deleteError.status === 403) {
+        setError('Ya no tenés permiso para eliminar este documento. La lista puede haber cambiado con tu sesión.')
       } else {
         setError(deleteError instanceof Error ? deleteError.message : 'Ocurrió un error inesperado')
       }
@@ -167,15 +174,24 @@ export function DocumentList({ onOpenDocument }: DocumentListProps) {
 
   return (
     <main className="document-list">
+      <div className="document-list__auth"><AuthControls /></div>
       <header className="document-list__header">
         <div>
           <p className="eyebrow">ESPACIO DE TRABAJO</p>
           <h1>Documentos</h1>
           <p className="subtitle">Creá una idea y escribila en equipo, en tiempo real.</p>
         </div>
-        <button className="primary-button" type="button" onClick={handleCreateDocument} disabled={isCreating}>
+        <div className="create-document-action">
+        <button className="primary-button" type="button" onClick={handleCreateDocument} disabled={isCreating || sessionStatus !== 'ready'}>
           {isCreating ? 'Creando…' : 'Nuevo documento'}
         </button>
+        {sessionStatus !== 'ready' && (
+          <p className="mutation-status" role="status">
+            {sessionStatus === 'loading' ? 'Esperando que la sesión esté lista.' : 'La sesión no está disponible.'}
+            {sessionStatus === 'error' && <button type="button" onClick={retrySession}>Reintentar sesión</button>}
+          </p>
+        )}
+        </div>
       </header>
 
       {error && (
@@ -246,6 +262,8 @@ export function DocumentList({ onOpenDocument }: DocumentListProps) {
               {visibleDocuments.map((document) => {
                 const title = getDocumentTitle(document)
                 const isDeleting = deletingId === document.id
+                const updatedAt = new Date(document.updatedAt)
+                const hasValidUpdatedAt = !Number.isNaN(updatedAt.getTime())
                 return (
                   <article className="document-card" key={document.id}>
                     <button
@@ -258,13 +276,16 @@ export function DocumentList({ onOpenDocument }: DocumentListProps) {
                       <span className="document-card__icon" aria-hidden="true">¶</span>
                       <span className="document-card__content">
                         <strong>{title}</strong>
-                        <time dateTime={document.updatedAt} title={new Date(document.updatedAt).toLocaleString('es-AR')}>
+                        <time
+                          dateTime={hasValidUpdatedAt ? document.updatedAt : undefined}
+                          title={hasValidUpdatedAt ? updatedAt.toLocaleString('es-AR') : undefined}
+                        >
                           Última edición: {formatUpdatedAt(document.updatedAt)}
                         </time>
                       </span>
                       <span className="document-card__arrow" aria-hidden="true">→</span>
                     </button>
-                    <button
+                    {document.canDelete && <button
                       className="document-card__delete"
                       type="button"
                       onClick={(event) => {
@@ -276,7 +297,7 @@ export function DocumentList({ onOpenDocument }: DocumentListProps) {
                       disabled={deletingId !== null}
                     >
                       {isDeleting ? 'Eliminando…' : 'Eliminar'}
-                    </button>
+                    </button>}
                   </article>
                 )
               })}
