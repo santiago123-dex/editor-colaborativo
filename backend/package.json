@@ -2,6 +2,7 @@
   "name": "editor-colaborativo-backend",
   "version": "0.1.0",
   "private": true,
+  "engines": { "node": ">=20" },
   "packageManager": "pnpm@10.22.0",
   "type": "module",
   "scripts": {

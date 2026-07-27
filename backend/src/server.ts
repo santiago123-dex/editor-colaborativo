@@ -132,6 +132,10 @@ export const createCollaborationServer = (
     app.use(cors())
   }
 
+  app.get('/healthz', (_request, response) => {
+    response.status(200).json({ status: 'ok' })
+  })
+
   app.use(express.json({ limit: '1mb' }))
 
   const getSession = (request: Request) => (request as AuthRequest).session
