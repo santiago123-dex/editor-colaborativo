@@ -4,7 +4,12 @@ import { Editor } from './components/Editor'
 
 function getDocumentIdFromPath(): string | null {
   const match = window.location.pathname.match(/^\/documents\/([^/]+)\/?$/)
-  return match ? decodeURIComponent(match[1]) : null
+  if (!match) return null
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return null
+  }
 }
 
 export default function App() {

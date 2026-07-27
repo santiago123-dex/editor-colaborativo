@@ -9,10 +9,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@tiptap/extension-character-count": "3.28.0",
     "@tiptap/extension-collaboration": "^3.0.9",
+    "@tiptap/extension-collaboration-caret": "^3.28.0",
+    "@tiptap/extension-link": "3.28.0",
     "@tiptap/extension-placeholder": "^3.0.9",
+    "@tiptap/extension-task-item": "3.28.0",
+    "@tiptap/extension-task-list": "3.28.0",
     "@tiptap/react": "^3.0.9",
     "@tiptap/starter-kit": "^3.0.9",
+    "lib0": "^0.2.117",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "y-websocket": "^3.0.0",

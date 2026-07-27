@@ -30,4 +30,11 @@ describe('App routing', () => {
     fireEvent.click(screen.getByRole('button', { name: /volver/i }))
     expect(window.location.pathname).toBe('/')
   })
+
+  it('falls back to the document list for a malformed encoded pathname', () => {
+    window.history.replaceState({}, '', '/documents/%E0%A4%A')
+
+    expect(() => render(<App />)).not.toThrow()
+    expect(screen.getByRole('button', { name: /abrir documento/i })).toBeInTheDocument()
+  })
 })

@@ -1,7 +1,17 @@
+import { request } from './http'
+
+export { HttpError } from './http'
+
 export interface DocumentSummary {
   id: string
   createdAt: string
+  updatedAt: string
   title: string
+  canDelete: boolean
+}
+
+export interface DocumentDetails extends DocumentSummary {
+  content: string
 }
 
 export interface CreatedDocument {
@@ -9,32 +19,51 @@ export interface CreatedDocument {
   createdAt: string
 }
 
-// Keeping the backend address here prevents UI components from knowing HTTP details.
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000'
-
-async function request<T>(path: string, errorMessage: string, init?: RequestInit): Promise<T> {
-  let response: Response
-
-  try {
-    response = init
-      ? await fetch(`${API_URL}${path}`, init)
-      : await fetch(`${API_URL}${path}`)
-  } catch {
-    // Network errors do not include the backend URL, so expose an actionable message to the UI.
-    throw new Error(`No se pudo conectar con el backend en ${API_URL}`)
-  }
-
-  if (!response.ok) {
-    throw new Error(errorMessage)
-  }
-
-  return response.json() as Promise<T>
+export function getDocuments(signal?: AbortSignal): Promise<DocumentSummary[]> {
+  return request(
+    '/documents',
+    'No se pudieron cargar los documentos',
+    signal ? { signal } : undefined,
+  )
 }
 
-export function getDocuments(): Promise<DocumentSummary[]> {
-  return request('/documents', 'No se pudieron cargar los documentos')
+export function createDocument(signal?: AbortSignal): Promise<CreatedDocument> {
+  return request('/documents', 'No se pudo crear el documento', {
+    method: 'POST',
+    ...(signal ? { signal } : {}),
+  })
 }
 
-export function createDocument(): Promise<CreatedDocument> {
-  return request('/documents', 'No se pudo crear el documento', { method: 'POST' })
+export function getDocument(id: string, signal?: AbortSignal): Promise<DocumentDetails> {
+  return request(
+    `/documents/${encodeURIComponent(id)}`,
+    'No se pudieron cargar los datos del documento',
+    signal ? { signal } : undefined,
+  )
+}
+
+export function updateDocumentTitle(
+  id: string,
+  title: string,
+  signal?: AbortSignal,
+): Promise<DocumentSummary> {
+  return request(
+    `/documents/${encodeURIComponent(id)}`,
+    'No se pudo guardar el título. Intentá nuevamente',
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+      ...(signal ? { signal } : {}),
+    },
+  )
+}
+
+export function deleteDocument(id: string, signal?: AbortSignal): Promise<void> {
+  return request(
+    `/documents/${encodeURIComponent(id)}`,
+    'No se pudo eliminar el documento. Intentá nuevamente',
+    { method: 'DELETE', ...(signal ? { signal } : {}) },
+    false,
+  )
 }
