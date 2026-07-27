@@ -5,7 +5,15 @@ const databasePath = process.env.DATABASE_PATH ?? 'editor-colaborativo.sqlite'
 const corsOrigins = process.env.CORS_ORIGINS ?? 'http://localhost:5173'
 const allowedOrigins = corsOrigins.split(',').map((o) => o.trim())
 const csrfSecret = process.env.CSRF_SECRET
-const backend = createCollaborationServer({ databasePath, allowedOrigins, csrfSecret })
+const production = process.env.NODE_ENV === 'production'
+const secureCookies = production || process.env.COOKIE_SECURE === 'true'
+const backend = createCollaborationServer({
+  databasePath,
+  allowedOrigins,
+  csrfSecret,
+  production,
+  secureCookies,
+})
 
 backend.httpServer.listen(port, () => {
   console.log(`Backend listening on http://localhost:${port}`)
